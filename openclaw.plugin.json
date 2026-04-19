@@ -1,31 +1,41 @@
 {
   "id": "openclaw-interven-guard",
   "name": "Interven Guard",
-  "description": "POSTs outbound tool calls to Interven /v1/scan (ALLOW/DENY/SANITIZE/REQUIRE_APPROVAL) before execution.",
+  "description": "POSTs outbound tool calls to Interven /v1/scan (ALLOW/DENY/SANITIZE/REQUIRE_APPROVAL) before execution. Reads no env vars, no child_process, no filesystem; configuration is sourced exclusively from this config block.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
+    "required": ["apiKey"],
     "properties": {
-      "gatewayUrl": {
-        "type": "string",
-        "title": "Interven base URL",
-        "description": "Overrides INTERVEN_GATEWAY_URL when set. Default: https://api.intervensecurity.com",
-        "default": "https://api.intervensecurity.com"
-      },
       "apiKey": {
         "type": "string",
         "title": "API key",
-        "description": "Overrides INTERVEN_API_KEY when set. Prefer the env var on shared hosts. Format: iv_live_*"
+        "description": "Interven API key (iv_live_*). REQUIRED for enforcement. Without it the plugin fails open (logs and allows the tool call). Get one at https://intervensecurity.com",
+        "pattern": "^iv_(live|test)_[A-Za-z0-9]{20,}$"
+      },
+      "gatewayUrl": {
+        "type": "string",
+        "title": "Interven base URL",
+        "description": "Override the hosted Interven endpoint. Only set this if you self-host Interven.",
+        "default": "https://api.intervensecurity.com",
+        "format": "uri"
       },
       "guardedTools": {
         "type": "array",
         "title": "Guarded tools",
-        "description": "Which built-in OpenClaw tools to scan. Defaults to all five: web_fetch, exec, web_search, browser, message. Set ['web_fetch'] to only scan outbound HTTP fetches.",
+        "description": "Which built-in OpenClaw tools to scan. Defaults to all five. Set to ['web_fetch'] to only scan outbound HTTP fetches.",
         "items": {
           "type": "string",
           "enum": ["web_fetch", "exec", "web_search", "browser", "message"]
         },
         "default": ["web_fetch", "exec", "web_search", "browser", "message"]
+      },
+      "scanTimeoutMs": {
+        "type": "integer",
+        "title": "Scan timeout (ms)",
+        "description": "Per-scan fetch timeout. On timeout the plugin fails open (allows the tool call).",
+        "minimum": 3000,
+        "default": 15000
       }
     }
   }

@@ -5,12 +5,23 @@ All notable changes to `openclaw-interven-guard` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-04-19
+
+### Changed (security scanner pass)
+- Removed all `process.env.*` reads from `index.ts`. v0.2.0 was hard-blocked at install by OpenClaw's static security scanner ("Environment variable access combined with network send — possible credential harvesting") because it co-located env access and outbound `fetch` in one file. v0.2.1 sources every config field exclusively from `api.pluginConfig`, eliminating the env-access pattern.
+- `apiKey` is now marked **required** in `openclaw.plugin.json` configSchema (validated against `^iv_(live|test)_[A-Za-z0-9]{20,}$`). Without it the plugin fails open as before, but operators get an explicit prompt at install time.
+- `scanTimeoutMs` exposed as a configSchema field (was previously env-only).
+
+### Migration
+v0.1.x / v0.2.0 users who set `INTERVEN_API_KEY` / `INTERVEN_GATEWAY_URL` / `INTERVEN_SCAN_TIMEOUT_MS` / `INTERVEN_GUARDED_TOOLS` as env vars must move those values into `~/.openclaw/openclaw.json` under `plugins.entries["openclaw-interven-guard"].config.{apiKey, gatewayUrl, scanTimeoutMs, guardedTools}`. See README for the exact JSON snippet.
+
 ## [0.2.0] — 2026-04-19
 
 ### Added
 - Configurable guarded tools via `INTERVEN_GUARDED_TOOLS` env var or `guardedTools` plugin config (array). Lets operators narrow scanning to e.g. just `web_fetch` without forking the plugin.
 - `guardedTools` field documented in `openclaw.plugin.json` configSchema.
 - LICENSE file (MIT) and CHANGELOG.md for ClawHub publishing.
+- `openclaw.build.openclawVersion: "2026.4.15"` in package.json — pins the gateway version this plugin was built against (required by the ClawHub publisher).
 
 ### Changed
 - Default gateway URL is now `https://api.intervensecurity.com` (was `http://100.80.251.3:4000` lab IP). Override with `INTERVEN_GATEWAY_URL` for self-hosted Interven.

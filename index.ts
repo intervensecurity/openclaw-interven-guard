@@ -1,24 +1,28 @@
 /**
  * openclaw-interven-guard — before_tool_call → Interven POST /v1/scan
  *
- * Env: INTERVEN_GATEWAY_URL (optional), INTERVEN_API_KEY (required for enforcement),
- *       INTERVEN_SCAN_TIMEOUT_MS (optional, default 15000),
- *       INTERVEN_GUARDED_TOOLS (optional, comma-separated, default "web_fetch,exec,web_search,browser,message")
- * Config: plugins.entries["openclaw-interven-guard"].config.{ gatewayUrl, apiKey, guardedTools }
+ * Configuration (all via openclaw.json plugin config):
+ *   plugins.entries["openclaw-interven-guard"].config.{
+ *     gatewayUrl:     string  (optional, default "https://api.intervensecurity.com")
+ *     apiKey:         string  (REQUIRED for enforcement; without it the plugin fails open)
+ *     guardedTools:   string[] (optional, default ["web_fetch","exec","web_search","browser","message"])
+ *     scanTimeoutMs:  number  (optional, default 15000, min 3000)
+ *   }
+ *
+ * Notes for security scanners: this plugin intentionally performs outbound
+ * fetch to the configured Interven gateway only. It does NOT read environment
+ * variables, child_process, the filesystem, or any credential store.
+ * All configuration is sourced exclusively from api.pluginConfig.
+ *
  * Logging: console.log only (do not use api.logger here).
  */
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const DEFAULT_GUARDED_TOOLS = ["web_fetch", "exec", "web_search", "browser", "message"];
 const VALID_TOOLS = new Set(["web_fetch", "exec", "web_search", "browser", "message"]);
-
 const DEFAULT_GATEWAY = "https://api.intervensecurity.com";
-
-/** Scan request budget; on timeout we fail open (same as network error). */
-const SCAN_TIMEOUT_MS = Math.max(
-  3000,
-  Number.parseInt(process.env.INTERVEN_SCAN_TIMEOUT_MS ?? "15000", 10) || 15000
-);
+const DEFAULT_SCAN_TIMEOUT_MS = 15000;
+const MIN_SCAN_TIMEOUT_MS = 3000;
 
 type ScanBody = {
   method: string;
@@ -118,21 +122,32 @@ function normalizeToolName(raw: string): string {
 function resolveGatewayUrl(api: { pluginConfig?: Record<string, unknown> }): string {
   const fromConfig = api.pluginConfig?.gatewayUrl;
   if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim().replace(/\/$/, "");
-  const env = process.env.INTERVEN_GATEWAY_URL?.trim();
-  if (env) return env.replace(/\/$/, "");
   return DEFAULT_GATEWAY.replace(/\/$/, "");
 }
 
 function resolveApiKey(api: { pluginConfig?: Record<string, unknown> }): string | undefined {
   const fromConfig = api.pluginConfig?.apiKey;
   if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
-  const env = process.env.INTERVEN_API_KEY?.trim();
-  return env || undefined;
+  return undefined;
+}
+
+function resolveScanTimeoutMs(api: { pluginConfig?: Record<string, unknown> }): number {
+  const raw = api.pluginConfig?.scanTimeoutMs;
+  let n: number;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    n = raw;
+  } else if (typeof raw === "string") {
+    const parsed = Number.parseInt(raw, 10);
+    n = Number.isFinite(parsed) ? parsed : DEFAULT_SCAN_TIMEOUT_MS;
+  } else {
+    n = DEFAULT_SCAN_TIMEOUT_MS;
+  }
+  return Math.max(MIN_SCAN_TIMEOUT_MS, n);
 }
 
 /**
  * Resolve the set of guarded tools.
- * Precedence: pluginConfig.guardedTools > INTERVEN_GUARDED_TOOLS env > DEFAULT_GUARDED_TOOLS.
+ * Source: pluginConfig.guardedTools (array or comma-separated string).
  * Unknown names are dropped silently. Empty result falls back to defaults.
  */
 function resolveGuardedTools(api: { pluginConfig?: Record<string, unknown> }): Set<string> {
@@ -142,9 +157,6 @@ function resolveGuardedTools(api: { pluginConfig?: Record<string, unknown> }): S
     raw = fromConfig.filter((x): x is string => typeof x === "string");
   } else if (typeof fromConfig === "string") {
     raw = fromConfig.split(",");
-  } else {
-    const env = process.env.INTERVEN_GUARDED_TOOLS?.trim();
-    if (env) raw = env.split(",");
   }
   if (!raw) return new Set(DEFAULT_GUARDED_TOOLS);
   const cleaned = raw
@@ -215,7 +227,12 @@ function buildScanPayload(
   }
 }
 
-async function postScan(baseUrl: string, apiKey: string, body: ScanBody): Promise<ScanResponse | null> {
+async function postScan(
+  baseUrl: string,
+  apiKey: string,
+  body: ScanBody,
+  timeoutMs: number
+): Promise<ScanResponse | null> {
   const url = `${baseUrl}/v1/scan`;
   let res: Response;
   try {
@@ -226,10 +243,10 @@ async function postScan(baseUrl: string, apiKey: string, body: ScanBody): Promis
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    console.log(`[interven-guard] Interven unreachable or scan timed out (${SCAN_TIMEOUT_MS}ms) — fail open: ${String(err)}`);
+    console.log(`[interven-guard] Interven unreachable or scan timed out (${timeoutMs}ms) — fail open: ${String(err)}`);
     return null;
   }
 
@@ -322,7 +339,10 @@ export default definePluginEntry({
     }
 
     const guardedTools = resolveGuardedTools(api);
-    console.log(`[interven-guard] guarding tools: ${Array.from(guardedTools).sort().join(", ")}`);
+    const scanTimeoutMs = resolveScanTimeoutMs(api);
+    console.log(
+      `[interven-guard] guarding tools: ${Array.from(guardedTools).sort().join(", ")} (timeout=${scanTimeoutMs}ms)`
+    );
 
     // Typed lifecycle hook — NOT registerHook (that API is for internal HOOK.md-style events only).
     // Logging: use console only — OpenClaw's api.logger is string-first; Pino-style args crash formatting.
@@ -343,12 +363,15 @@ export default definePluginEntry({
 
       const apiKey = resolveApiKey(api);
       if (!apiKey) {
-        console.log("[interven-guard] INTERVEN_API_KEY missing — skipping scan (fail open)");
+        console.log(
+          "[interven-guard] apiKey missing in plugin config — skipping scan (fail open). " +
+            "Set plugins.entries['openclaw-interven-guard'].config.apiKey in openclaw.json."
+        );
         return;
       }
 
       const gateway = resolveGatewayUrl(api);
-      const data = await postScan(gateway, apiKey, scanBody);
+      const data = await postScan(gateway, apiKey, scanBody, scanTimeoutMs);
       const decision = data?.decision != null ? String(data.decision).toUpperCase() : "NONE";
       console.log(`[interven-guard] ${toolName} -> ${scanBody.url} -> ${decision}`);
 

@@ -31,58 +31,15 @@ Network errors, timeouts, missing API keys, or non-200 responses **fail open** �
 
 ## Install
 
-### Quick install (ClawHub — recommended)
+### Step 1 — Install the plugin
 
 ```bash
-openclaw plugins install clawhub:interven-guard
-echo 'INTERVEN_API_KEY=iv_live_your_key_here' >> ~/.openclaw/.env
+openclaw plugins install clawhub:openclaw-interven-guard
 ```
 
-That's it. Get an API key at [intervensecurity.com](https://intervensecurity.com) (free tier: 1,000 scans/month).
+### Step 2 — Configure your API key in `~/.openclaw/openclaw.json`
 
-### Manual install (development / self-hosted Interven)
-
-```bash
-git clone https://github.com/intervensecurity/openclaw-interven-guard.git
-openclaw plugins install ./openclaw-interven-guard
-```
-
-Then add to `~/.openclaw/.env`:
-
-```bash
-INTERVEN_API_KEY=iv_live_your_key_here
-# Optional — only if you self-host Interven instead of using the hosted SaaS
-# INTERVEN_GATEWAY_URL=http://your-interven-host:4000
-```
-
-Restart the gateway:
-
-```bash
-openclaw gateway restart
-```
-
-Verify:
-
-```bash
-openclaw plugins list --verbose | grep interven-guard
-openclaw plugins inspect openclaw-interven-guard
-```
-
-## Configuration
-
-All fields are optional and have sensible defaults.
-
-| Source | Field / variable | Default | Notes |
-|--------|------------------|---------|-------|
-| Env | `INTERVEN_API_KEY` | — | **Required** for enforcement. Without it, plugin fails open. |
-| Env | `INTERVEN_GATEWAY_URL` | `https://api.intervensecurity.com` | Override only when self-hosting |
-| Env | `INTERVEN_SCAN_TIMEOUT_MS` | `15000` | Per-scan timeout. Min 3000. On timeout → fail open. |
-| Env | `INTERVEN_GUARDED_TOOLS` | `web_fetch,exec,web_search,browser,message` | Comma-separated. Set to `web_fetch` only to scan outbound HTTP fetches. |
-| `openclaw.json` | `plugins.entries["openclaw-interven-guard"].config.gatewayUrl` | — | Overrides env |
-| `openclaw.json` | `plugins.entries["openclaw-interven-guard"].config.apiKey` | — | Overrides env (prefer env on shared hosts) |
-| `openclaw.json` | `plugins.entries["openclaw-interven-guard"].config.guardedTools` | — | Array; overrides env |
-
-### Example `openclaw.json` snippet
+The API key is set in plugin config (the plugin does **not** read environment variables — see [Security model](#security-model) below). Add this block to your `openclaw.json`:
 
 ```json5
 {
@@ -92,6 +49,75 @@ All fields are optional and have sensible defaults.
       "openclaw-interven-guard": {
         enabled: true,
         config: {
+          apiKey: "iv_live_your_key_here"
+        }
+      }
+    }
+  }
+}
+```
+
+Get an API key at [intervensecurity.com](https://intervensecurity.com) (free tier: 1,000 scans/month).
+
+> **Tip:** `chmod 600 ~/.openclaw/openclaw.json` to keep the API key readable only by your user. If you check `openclaw.json` into git, use a config-templating tool (envsubst, sops, dotenvx) to substitute the key at deploy time — never commit the literal `iv_live_*` value.
+
+### Step 3 — Restart the gateway
+
+```bash
+openclaw gateway restart
+```
+
+### Verify
+
+```bash
+openclaw plugins list --verbose | grep interven-guard
+openclaw plugins inspect openclaw-interven-guard
+journalctl --user -u openclaw-gateway.service -f | grep interven-guard
+```
+
+You should see `[interven-guard] guarding tools: ...` in the gateway logs on startup.
+
+### Manual install (development / self-hosted Interven)
+
+```bash
+git clone https://github.com/intervensecurity/openclaw-interven-guard.git
+openclaw plugins install ./openclaw-interven-guard
+```
+
+Then configure as in Step 2 above. To point at a self-hosted Interven instead of the SaaS, add `gatewayUrl`:
+
+```json5
+"openclaw-interven-guard": {
+  enabled: true,
+  config: {
+    apiKey: "iv_live_your_key_here",
+    gatewayUrl: "http://your-interven-host:4000"
+  }
+}
+```
+
+## Configuration
+
+All config lives under `plugins.entries["openclaw-interven-guard"].config` in `~/.openclaw/openclaw.json`. The plugin reads **no** environment variables.
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `apiKey` | string | — | **Required** for enforcement. Format `iv_live_*`. Without it, plugin fails open. |
+| `gatewayUrl` | string | `https://api.intervensecurity.com` | Override only when self-hosting Interven |
+| `guardedTools` | string[] | `["web_fetch","exec","web_search","browser","message"]` | Set to `["web_fetch"]` to only scan outbound HTTP fetches |
+| `scanTimeoutMs` | integer | `15000` | Per-scan timeout (min 3000). On timeout → fail open. |
+
+### Example `openclaw.json` snippet (recommended for chat agents)
+
+```json5
+{
+  plugins: {
+    allow: ["openclaw-interven-guard"],
+    entries: {
+      "openclaw-interven-guard": {
+        enabled: true,
+        config: {
+          apiKey: "iv_live_your_key_here",
           // Only scan outbound HTTP fetches (lighter, recommended for chat agents)
           guardedTools: ["web_fetch"]
         }
@@ -124,13 +150,24 @@ Small models (e.g. `gpt-4o-mini`) can skip tool calls when the system prompt is 
 
 Verified config keys (OpenClaw v2026.4.x): `skills.allowBundled` (bool, default `true`), `skills.limits.maxSkillsPromptChars` (default 18000), `agents.list[].skills` (`[]` = none), `tools.profile` ∈ `minimal | coding | messaging | full`.
 
+## Security model
+
+This plugin sits in your agent's outbound path and intentionally:
+
+- **Reads from `api.pluginConfig` only.** No `process.env`, no `child_process`, no filesystem reads, no credential stores. The API key reaches the plugin exclusively through OpenClaw's typed plugin-config surface.
+- **Sends outbound HTTP to one host only** — the `gatewayUrl` you set (default `https://api.intervensecurity.com`). The destination is fixed at config time; the plugin cannot redirect traffic elsewhere at runtime.
+- **Sends only the tool-call metadata** that's necessary for policy evaluation: HTTP method, URL, body, optional headers. It does not send your agent's conversation history, system prompts, memory, or any other workspace data.
+- **Logs to `console.log` only**, never to disk, and never includes the API key in any log line.
+
+If you're auditing this plugin before installing it on a sensitive agent, the entire data flow is in [`index.ts`](./index.ts) — ~360 lines, no dependencies beyond OpenClaw's plugin SDK and Node 20+ built-in `fetch`.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---------|-------------|
 | `hook registration missing name` | You're using `api.registerHook(...)` somewhere. Use `api.on("before_tool_call", …)` only. |
 | `TypeError: message.startsWith is not a function` | Pino-style `log.warn({err}, "msg")` somewhere. Use `console.log` only. |
-| Plugin install rejected: "dangerous code patterns" | You're installing an unsigned local copy. Either install from ClawHub (`clawhub:interven-guard`) or use `--dangerously-force-unsafe-install` for dev only. |
+| Plugin install rejected: "dangerous code patterns" | You're installing an unsigned local copy. Either install from ClawHub (`clawhub:openclaw-interven-guard`) or use `--dangerously-force-unsafe-install` for dev only. |
 | Hook never fires | Confirm OpenClaw ≥ `2026.3.13`. Run `openclaw plugins doctor`. Check the model is actually calling the tool (see "Tuning" above). |
 | Clean URLs returning `REQUIRE_APPROVAL` | Agent's Interven trust score has degraded after repeated denies. Reset via dashboard or — for self-hosted — `UPDATE agent_trust_state SET trust_score=1.0, scrutiny_until=NULL WHERE agent_id='<your-uuid>'`. |
 | `Could not derive scan payload for <tool>` | Tool params shape changed. File an issue with the OpenClaw version and tool name. |

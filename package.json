@@ -1,6 +1,6 @@
 {
   "name": "openclaw-interven-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenClaw plugin: scans selected agent tool calls (web_fetch, exec, web_search, browser, message) through Interven before execution. Blocks malicious requests, redacts PII/secrets, and routes risky actions to human approval.",
   "type": "module",
   "license": "MIT",
@@ -33,15 +33,13 @@
     "CHANGELOG.md"
   ],
   "openclaw": {
-    "extensions": [
-      "./index.ts"
-    ],
+    "extensions": ["./index.ts"],
+    "build": {
+      "openclawVersion": "2026.4.15"
+    },
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",
       "minGatewayVersion": "2026.3.24-beta.2"
-    },
-    "build": {
-      "openclawVersion": "2026.4.15"
     }
   },
   "peerDependencies": {
