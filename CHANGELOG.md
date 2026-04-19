@@ -5,6 +5,27 @@ All notable changes to `openclaw-interven-guard` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-04-19
+
+### Changed — PAM-style hard block on REQUIRE_APPROVAL (BREAKING)
+
+Interven is now positioned correctly as a **firewall**, not an operator-decision aid. When a scan returns `REQUIRE_APPROVAL`, the plugin **hard-blocks** the tool call instead of surfacing an OpenClaw approval card to the operator.
+
+**Old behavior (v0.2.x):** plugin returned `{ requireApproval: ... }` → operator saw a Yes/No card on Telegram → operator decided → OpenClaw ran the tool. Interven was a passive observer.
+
+**New behavior (v0.3.0):** plugin returns `{ block: true, blockReason: "🛡️ Blocked pending security review. Approve at https://app.intervensecurity.com/approvals/<id>. Once approved, ask me to retry." }`. The security analyst (a separate human from the agent operator) approves in the Interven Console. The operator retries the same action, the gateway recognises the recent approval (via the new `RECENT_APPROVAL_GRANT` short-circuit on identical request signatures), and the tool runs.
+
+**Why:** The previous flow let the agent operator approve their own potentially-malicious actions, which makes Interven a logging system rather than a security control. Real PAM systems (BeyondTrust, CyberArk, Teleport) all use this two-actor pattern: requester ≠ approver. v0.3.0 brings Interven in line.
+
+### Migration from v0.2.x
+- The OpenClaw approval card on Telegram/Discord/Slack will no longer appear for `REQUIRE_APPROVAL` decisions.
+- Operators will see a hard-block message instead, with a link to the Interven Console.
+- After the analyst approves, the operator must re-trigger the same action (saying "ask me to retry" works); the gateway will short-circuit to ALLOW because of the recent approval grant.
+- This requires the gateway to be on Interven v0.4.0+ which ships the `RECENT_APPROVAL_GRANT` logic and migration `015_approval_signature.sql`. Older Interven gateways will work with this plugin but the retry won't auto-allow until they upgrade.
+
+### Removed
+- The `requireApproval` hook return from the `before_tool_call` flow. Plugins requiring operator-driven approval workflows should fork.
+
 ## [0.2.2] — 2026-04-19
 
 ### Fixed

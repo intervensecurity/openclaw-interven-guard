@@ -25,9 +25,13 @@ The plugin maps Interven's four decisions to OpenClaw hook results:
 | `ALLOW` | Tool runs normally |
 | `DENY` | `{ block: true, blockReason: "[Interven] DENY: <codes>" }` |
 | `SANITIZE` | Blocked with sanitized payload preview in the reason |
-| `REQUIRE_APPROVAL` | `{ requireApproval: { title, description, severity } }` — surfaces in OpenClaw's approval UI |
+| `REQUIRE_APPROVAL` | **Hard block** with a message pointing the operator to the Interven Console. The security analyst approves there; the operator retries; the gateway short-circuits to `ALLOW` via the recent approval grant. |
 
 Network errors, timeouts, missing API keys, or non-200 responses **fail open** — your agent keeps working even if Interven is unreachable.
+
+### Why we hard-block instead of asking the operator
+
+Interven is an **AI firewall**, not an operator-decision aid. Letting the operator (whose account could be compromised, who could be careless, or who just isn't the security team) approve their own risky actions makes Interven a logging tool, not a security control. v0.3.0 implements the two-actor PAM pattern used by BeyondTrust / CyberArk / Teleport: the agent operator requests, a separate security analyst approves. The operator retries after the analyst decides; the gateway recognises the recent approval and lets the second attempt through.
 
 ## Install
 

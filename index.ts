@@ -311,17 +311,25 @@ function mapDecision(data: ScanResponse | null): Record<string, unknown> | void 
   }
 
   if (decision === "REQUIRE_APPROVAL") {
-    // OpenClaw expects an object (not a boolean) — see PluginHookBeforeToolCallResult in plugin-sdk.
-    const desc = safeHookString(
-      `Policy returned REQUIRE_APPROVAL.${codes ? ` Reasons: ${codes}.` : ""}${trace}`,
-      "Interven policy requires approval for this action."
-    );
+    // PAM-style: Interven is the authoritative approver, not the OpenClaw operator.
+    // We HARD BLOCK the tool here. The security analyst approves in the Interven Console
+    // (https://app.intervensecurity.com/approvals/<id>); the agent then RETRIES the same
+    // tool call and the gateway short-circuits to ALLOW (RECENT_APPROVAL_GRANT). This is
+    // the right primitive for an AI firewall: operator approval ≠ security policy approval.
+    const approvalId = safeHookString(data?.approval_id, "");
+    const consoleUrl = approvalId
+      ? `https://app.intervensecurity.com/approvals/${approvalId}`
+      : "https://app.intervensecurity.com/approvals";
+    const reasonClause = codes ? ` Reason: ${codes}.` : "";
     return {
-      requireApproval: {
-        title: "Interven: approval required",
-        description: desc,
-        severity: "warning" as const,
-      },
+      block: true,
+      blockReason: safeHookString(
+        `🛡️ [Interven] Blocked pending security review.${reasonClause}` +
+          ` Approve at ${consoleUrl}` +
+          (approvalId ? ` (id: ${approvalId})` : "") +
+          `. Once approved, ask me to retry the same action and it will proceed.${trace}`,
+        "[Interven] Blocked pending security review"
+      ),
     };
   }
 
