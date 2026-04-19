@@ -1,0 +1,32 @@
+{
+  "id": "openclaw-interven-guard",
+  "name": "Interven Guard",
+  "description": "POSTs outbound tool calls to Interven /v1/scan (ALLOW/DENY/SANITIZE/REQUIRE_APPROVAL) before execution.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "gatewayUrl": {
+        "type": "string",
+        "title": "Interven base URL",
+        "description": "Overrides INTERVEN_GATEWAY_URL when set. Default: https://api.intervensecurity.com",
+        "default": "https://api.intervensecurity.com"
+      },
+      "apiKey": {
+        "type": "string",
+        "title": "API key",
+        "description": "Overrides INTERVEN_API_KEY when set. Prefer the env var on shared hosts. Format: iv_live_*"
+      },
+      "guardedTools": {
+        "type": "array",
+        "title": "Guarded tools",
+        "description": "Which built-in OpenClaw tools to scan. Defaults to all five: web_fetch, exec, web_search, browser, message. Set ['web_fetch'] to only scan outbound HTTP fetches.",
+        "items": {
+          "type": "string",
+          "enum": ["web_fetch", "exec", "web_search", "browser", "message"]
+        },
+        "default": ["web_fetch", "exec", "web_search", "browser", "message"]
+      }
+    }
+  }
+}
