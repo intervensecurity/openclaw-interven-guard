@@ -5,13 +5,11 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["apiKey"],
     "properties": {
       "apiKey": {
         "type": "string",
-        "title": "API key",
-        "description": "Interven API key (iv_live_*). REQUIRED for enforcement. Without it the plugin fails open (logs and allows the tool call). Get one at https://intervensecurity.com",
-        "pattern": "^iv_(live|test)_[A-Za-z0-9]{20,}$"
+        "title": "API key (required for enforcement)",
+        "description": "Interven API key (iv_live_*). Without it the plugin installs and loads but fails open on every scan (logs the missing key and allows the tool call). Set this after install to enable enforcement. Get one at https://intervensecurity.com"
       },
       "gatewayUrl": {
         "type": "string",

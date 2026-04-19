@@ -5,6 +5,12 @@ All notable changes to `openclaw-interven-guard` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] — 2026-04-19
+
+### Fixed
+- v0.2.1 install crashed at the config-write step with `must have required property 'apiKey'` because the configSchema marked `apiKey` as `required` and OpenClaw's installer writes an empty `{}` config before the operator has a chance to fill in fields. v0.2.2 removes `required: ["apiKey"]` from the schema — the field is documented as required-for-enforcement in its description, and the plugin code already fails open with a clear log line when it's missing, so the operator gets a clean install + a deferred apiKey-set step.
+- Removed the `iv_(live|test)_*` regex pattern from `apiKey` for the same reason — strict patterns can fail validation against the empty default written at install time.
+
 ## [0.2.1] — 2026-04-19
 
 ### Changed (security scanner pass)
