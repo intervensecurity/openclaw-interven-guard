@@ -61,3 +61,10 @@ v0.1.x / v0.2.0 users who set `INTERVEN_API_KEY` / `INTERVEN_GATEWAY_URL` / `INT
 - Decisions: `ALLOW` passes through, `DENY` blocks with reason codes, `SANITIZE` blocks with sanitized payload preview, `REQUIRE_APPROVAL` returns OpenClaw approval object.
 - Fail-open on network error, timeout, missing API key, bad JSON, or non-200 response.
 - Configurable via env vars (`INTERVEN_GATEWAY_URL`, `INTERVEN_API_KEY`, `INTERVEN_SCAN_TIMEOUT_MS`) or plugin config (`gatewayUrl`, `apiKey`).
+
+## 0.3.1 - 2026-04-21
+### Fixed
+- `exec` tool: when the shell command is a `curl` invocation, the plugin now parses the curl
+  flags (`-X METHOD`, `-H`, `-d`/`--data`/`--data-raw`) to extract the real URL/method/body
+  before sending the scan request. Previously these calls were classified as `custom_proxy`
+  against `exec://localhost` so tool-specific policies (Slack/GitHub/GDrive) did not fire.

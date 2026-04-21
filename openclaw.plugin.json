@@ -24,9 +24,21 @@
         "description": "Which built-in OpenClaw tools to scan. Defaults to all five. Set to ['web_fetch'] to only scan outbound HTTP fetches.",
         "items": {
           "type": "string",
-          "enum": ["web_fetch", "exec", "web_search", "browser", "message"]
+          "enum": [
+            "web_fetch",
+            "exec",
+            "web_search",
+            "browser",
+            "message"
+          ]
         },
-        "default": ["web_fetch", "exec", "web_search", "browser", "message"]
+        "default": [
+          "web_fetch",
+          "exec",
+          "web_search",
+          "browser",
+          "message"
+        ]
       },
       "scanTimeoutMs": {
         "type": "integer",
@@ -36,5 +48,6 @@
         "default": 15000
       }
     }
-  }
+  },
+  "version": "0.3.1"
 }
