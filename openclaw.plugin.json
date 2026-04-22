@@ -46,8 +46,16 @@
         "description": "Per-scan fetch timeout. On timeout the plugin fails open (allows the tool call).",
         "minimum": 3000,
         "default": 15000
+      },
+      "approvalWaitSec": {
+        "type": "integer",
+        "title": "Approval wait (seconds)",
+        "description": "When Interven returns REQUIRE_APPROVAL, the plugin polls until the security analyst approves or denies in the Interven Console \u2014 then completes the tool call in the same conversation turn. Set to 0 to disable waiting (the plugin blocks immediately and the user must manually retry after approval).",
+        "minimum": 0,
+        "maximum": 1800,
+        "default": 180
       }
     }
   },
-  "version": "0.3.1"
+  "version": "0.3.2"
 }

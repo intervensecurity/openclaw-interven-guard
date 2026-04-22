@@ -3,10 +3,13 @@
  *
  * Configuration (all via openclaw.json plugin config):
  *   plugins.entries["openclaw-interven-guard"].config.{
- *     gatewayUrl:     string  (optional, default "https://api.intervensecurity.com")
- *     apiKey:         string  (REQUIRED for enforcement; without it the plugin fails open)
- *     guardedTools:   string[] (optional, default ["web_fetch","exec","web_search","browser","message"])
- *     scanTimeoutMs:  number  (optional, default 15000, min 3000)
+ *     gatewayUrl:       string  (optional, default "https://api.intervensecurity.com")
+ *     apiKey:           string  (REQUIRED for enforcement; without it the plugin fails open)
+ *     guardedTools:     string[] (optional, default ["web_fetch","exec","web_search","browser","message"])
+ *     scanTimeoutMs:    number  (optional, default 15000, min 3000) — timeout for each scan call
+ *     approvalWaitSec:  number  (optional, default 180, max 1800) — how long the plugin waits
+ *                               on REQUIRE_APPROVAL for the analyst to approve before giving up.
+ *                               Set to 0 for legacy hard-block behavior (user must manually retry).
  *   }
  *
  * Notes for security scanners: this plugin intentionally performs outbound
@@ -23,6 +26,13 @@ const VALID_TOOLS = new Set(["web_fetch", "exec", "web_search", "browser", "mess
 const DEFAULT_GATEWAY = "https://api.intervensecurity.com";
 const DEFAULT_SCAN_TIMEOUT_MS = 15000;
 const MIN_SCAN_TIMEOUT_MS = 3000;
+
+// How long the plugin waits (polling Interven) for an analyst decision on REQUIRE_APPROVAL
+// before giving up and returning a hard block. Set to 0 to disable waiting (legacy v0.3.1
+// behavior: hard-block immediately and require a manual retry).
+const DEFAULT_APPROVAL_WAIT_SEC = 180; // 3 minutes — matches typical chat-user patience
+const MAX_APPROVAL_WAIT_SEC = 1800;    // 30 minutes hard ceiling
+const APPROVAL_POLL_INTERVAL_MS = 2500;
 
 type ScanBody = {
   method: string;
@@ -145,6 +155,71 @@ function resolveScanTimeoutMs(api: { pluginConfig?: Record<string, unknown> }): 
   return Math.max(MIN_SCAN_TIMEOUT_MS, n);
 }
 
+function resolveApprovalWaitSec(api: { pluginConfig?: Record<string, unknown> }): number {
+  const raw = api.pluginConfig?.approvalWaitSec;
+  let n: number;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    n = raw;
+  } else if (typeof raw === "string") {
+    const parsed = Number.parseInt(raw, 10);
+    n = Number.isFinite(parsed) ? parsed : DEFAULT_APPROVAL_WAIT_SEC;
+  } else {
+    n = DEFAULT_APPROVAL_WAIT_SEC;
+  }
+  if (n < 0) n = 0;
+  return Math.min(MAX_APPROVAL_WAIT_SEC, n);
+}
+
+/**
+ * Poll Interven's approval-status endpoint until the analyst decides, the approval expires,
+ * or the wait budget runs out. Returns a terse status string the caller can map to a hook
+ * result. Keeps the agent turn alive so the user doesn't have to manually retry.
+ */
+async function waitForApproval(
+  gatewayUrl: string,
+  apiKey: string,
+  approvalId: string,
+  waitSec: number
+): Promise<"approved" | "denied" | "expired" | "timeout" | "error"> {
+  const deadline = Date.now() + waitSec * 1000;
+  let lastError = 0;
+
+  // small initial delay so the analyst has a moment to click before we start polling
+  await new Promise((r) => setTimeout(r, 1500));
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(
+        `${gatewayUrl.replace(/\/$/, "")}/v1/approvals/${encodeURIComponent(approvalId)}/status`,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${apiKey}` },
+        }
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { status?: string };
+        const status = String(data?.status || "").toLowerCase();
+        if (status === "approved") return "approved";
+        if (status === "denied" || status === "rejected") return "denied";
+        if (status === "expired") return "expired";
+        // 'pending' falls through to keep polling
+      } else if (res.status === 429) {
+        // rate-limited by telemetry — back off a bit
+        await new Promise((r) => setTimeout(r, APPROVAL_POLL_INTERVAL_MS * 2));
+        continue;
+      } else {
+        lastError++;
+        if (lastError >= 5) return "error";
+      }
+    } catch {
+      lastError++;
+      if (lastError >= 5) return "error";
+    }
+    await new Promise((r) => setTimeout(r, APPROVAL_POLL_INTERVAL_MS));
+  }
+  return "timeout";
+}
+
 /**
  * Resolve the set of guarded tools.
  * Source: pluginConfig.guardedTools (array or comma-separated string).
@@ -163,6 +238,99 @@ function resolveGuardedTools(api: { pluginConfig?: Record<string, unknown> }): S
     .map((s) => s.trim().toLowerCase())
     .filter((s) => s.length && VALID_TOOLS.has(s));
   return cleaned.length ? new Set(cleaned) : new Set(DEFAULT_GUARDED_TOOLS);
+}
+
+/**
+ * Best-effort parse of a shell curl command so we can feed the real URL/method/body to
+ * Interven. Handles the common flags the demo (and most agent-generated curl commands)
+ * actually use: -X, -H, -d / --data / --data-raw, -G, and bare URLs. Quoted single or
+ * double strings are preserved.
+ *
+ * Returns `null` if the command isn't a curl invocation or is malformed.
+ */
+function parseCurl(command: string): { method: string; url: string; headers: Record<string, string>; body?: unknown } | null {
+  const trimmed = command.trim();
+  if (!/^curl\b/i.test(trimmed)) return null;
+
+  // Tokenize respecting single and double quotes. Keeps `{...}` JSON blobs intact.
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < trimmed.length) {
+    const ch = trimmed[i];
+    if (ch === " " || ch === "\t" || ch === "\n") {
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let out = "";
+      i++;
+      while (i < trimmed.length && trimmed[i] !== quote) {
+        if (trimmed[i] === "\\" && i + 1 < trimmed.length) {
+          out += trimmed[i + 1];
+          i += 2;
+        } else {
+          out += trimmed[i];
+          i++;
+        }
+      }
+      i++;
+      tokens.push(out);
+      continue;
+    }
+    let out = "";
+    while (i < trimmed.length && trimmed[i] !== " " && trimmed[i] !== "\t" && trimmed[i] !== "\n") {
+      out += trimmed[i];
+      i++;
+    }
+    tokens.push(out);
+  }
+
+  let method: string | null = null;
+  let url: string | null = null;
+  const headers: Record<string, string> = {};
+  let dataRaw: string | null = null;
+
+  for (let j = 1; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (t === "-X" || t === "--request") {
+      method = (tokens[++j] || "GET").toUpperCase();
+      continue;
+    }
+    if (t === "-H" || t === "--header") {
+      const h = tokens[++j] || "";
+      const colon = h.indexOf(":");
+      if (colon > 0) {
+        headers[h.slice(0, colon).trim()] = h.slice(colon + 1).trim();
+      }
+      continue;
+    }
+    if (t === "-d" || t === "--data" || t === "--data-raw" || t === "--data-binary") {
+      dataRaw = tokens[++j] || "";
+      continue;
+    }
+    if (t.startsWith("-")) {
+      // Unknown flag; skip its value if it looks like a value follows.
+      continue;
+    }
+    if (!url && (t.startsWith("http://") || t.startsWith("https://"))) {
+      url = t;
+    }
+  }
+
+  if (!url) return null;
+  if (!method) method = dataRaw ? "POST" : "GET";
+
+  let body: unknown = {};
+  if (dataRaw) {
+    try {
+      body = JSON.parse(dataRaw);
+    } catch {
+      body = { raw: dataRaw };
+    }
+  }
+
+  return { method, url, headers, body };
 }
 
 function buildScanPayload(
@@ -185,6 +353,22 @@ function buildScanPayload(
     case "exec": {
       const command = pickString(params, ["command", "cmd", "shell", "line"]);
       if (!command) return null;
+
+      // If the command is a curl invocation, extract the actual URL/method/body so the
+      // gateway's URL-based normalizer + policy engine can classify it properly (Slack,
+      // GitHub, Google Drive, AWS, etc.). Without this, every curl exec goes to
+      // tool=custom_proxy and policy-specific rules don't fire.
+      const curl = parseCurl(command);
+      if (curl) {
+        return {
+          method: curl.method,
+          url: curl.url,
+          headers: curl.headers,
+          body: curl.body ?? {},
+          runtime_type: rt,
+        };
+      }
+
       return {
         method: "POST",
         url: "exec://localhost",
@@ -266,7 +450,10 @@ async function postScan(
   return data;
 }
 
-function mapDecision(data: ScanResponse | null): Record<string, unknown> | void {
+async function mapDecision(
+  data: ScanResponse | null,
+  ctx: { gatewayUrl: string; apiKey: string; approvalWaitSec: number }
+): Promise<Record<string, unknown> | void> {
   if (!data || !data.decision) {
     return;
   }
@@ -312,15 +499,72 @@ function mapDecision(data: ScanResponse | null): Record<string, unknown> | void 
 
   if (decision === "REQUIRE_APPROVAL") {
     // PAM-style: Interven is the authoritative approver, not the OpenClaw operator.
-    // We HARD BLOCK the tool here. The security analyst approves in the Interven Console
-    // (https://app.intervensecurity.com/approvals/<id>); the agent then RETRIES the same
-    // tool call and the gateway short-circuits to ALLOW (RECENT_APPROVAL_GRANT). This is
-    // the right primitive for an AI firewall: operator approval ≠ security policy approval.
+    // Default behavior (v0.3.2+): WAIT for the analyst to decide, polling Interven's
+    // status endpoint. The user stays in-conversation; no manual retry needed.
+    // Set approvalWaitSec=0 in plugin config for legacy hard-block behavior.
     const approvalId = safeHookString(data?.approval_id, "");
     const consoleUrl = approvalId
       ? `https://app.intervensecurity.com/approvals/${approvalId}`
       : "https://app.intervensecurity.com/approvals";
     const reasonClause = codes ? ` Reason: ${codes}.` : "";
+
+    if (ctx.approvalWaitSec > 0 && approvalId) {
+      console.log(
+        `[interven-guard] REQUIRE_APPROVAL — waiting up to ${ctx.approvalWaitSec}s for analyst decision (approve at ${consoleUrl})`
+      );
+      const outcome = await waitForApproval(
+        ctx.gatewayUrl,
+        ctx.apiKey,
+        approvalId,
+        ctx.approvalWaitSec
+      );
+      console.log(`[interven-guard] approval outcome for ${approvalId}: ${outcome}`);
+
+      if (outcome === "approved") {
+        // Analyst said yes. Let the tool call proceed on this same turn.
+        return;
+      }
+      if (outcome === "denied") {
+        return {
+          block: true,
+          blockReason: safeHookString(
+            `🛡️ [Interven] Denied by security analyst.${reasonClause}${trace}`,
+            "[Interven] Denied by analyst"
+          ),
+        };
+      }
+      if (outcome === "expired") {
+        return {
+          block: true,
+          blockReason: safeHookString(
+            `🛡️ [Interven] Approval request expired before an analyst reviewed it.${reasonClause} Try again in a moment.${trace}`,
+            "[Interven] Approval expired"
+          ),
+        };
+      }
+      if (outcome === "error") {
+        return {
+          block: true,
+          blockReason: safeHookString(
+            `🛡️ [Interven] Lost connection to security gateway while waiting for approval. Approve at ${consoleUrl} and retry.${trace}`,
+            "[Interven] Gateway connection lost"
+          ),
+        };
+      }
+      // timeout
+      return {
+        block: true,
+        blockReason: safeHookString(
+          `🛡️ [Interven] Still awaiting security review after ${ctx.approvalWaitSec}s.${reasonClause}` +
+            ` Approve at ${consoleUrl}` +
+            (approvalId ? ` (id: ${approvalId})` : "") +
+            `, then ask me to retry.${trace}`,
+          "[Interven] Awaiting security review — timed out"
+        ),
+      };
+    }
+
+    // Legacy: hard-block immediately, user must manually retry after approval
     return {
       block: true,
       blockReason: safeHookString(
@@ -348,8 +592,10 @@ export default definePluginEntry({
 
     const guardedTools = resolveGuardedTools(api);
     const scanTimeoutMs = resolveScanTimeoutMs(api);
+    const approvalWaitSec = resolveApprovalWaitSec(api);
     console.log(
-      `[interven-guard] guarding tools: ${Array.from(guardedTools).sort().join(", ")} (timeout=${scanTimeoutMs}ms)`
+      `[interven-guard] guarding tools: ${Array.from(guardedTools).sort().join(", ")} ` +
+        `(timeout=${scanTimeoutMs}ms, approvalWait=${approvalWaitSec}s)`
     );
 
     // Typed lifecycle hook — NOT registerHook (that API is for internal HOOK.md-style events only).
@@ -383,7 +629,7 @@ export default definePluginEntry({
       const decision = data?.decision != null ? String(data.decision).toUpperCase() : "NONE";
       console.log(`[interven-guard] ${toolName} -> ${scanBody.url} -> ${decision}`);
 
-      return mapDecision(data);
+      return await mapDecision(data, { gatewayUrl: gateway, apiKey, approvalWaitSec });
     });
   },
 });

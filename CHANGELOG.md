@@ -68,3 +68,14 @@ v0.1.x / v0.2.0 users who set `INTERVEN_API_KEY` / `INTERVEN_GATEWAY_URL` / `INT
   flags (`-X METHOD`, `-H`, `-d`/`--data`/`--data-raw`) to extract the real URL/method/body
   before sending the scan request. Previously these calls were classified as `custom_proxy`
   against `exec://localhost` so tool-specific policies (Slack/GitHub/GDrive) did not fire.
+
+## 0.3.2 - 2026-04-22
+### Added
+- `approvalWaitSec` config option (default 180s). On REQUIRE_APPROVAL the plugin now polls
+  Interven's new `/v1/approvals/:id/status` endpoint and completes the tool call in the same
+  conversation turn once the analyst decides. No manual retry needed. Set to 0 for the
+  legacy v0.3.1 hard-block behavior.
+
+### Required gateway version
+- Requires gateway version that exposes `GET /v1/approvals/:id/status` (Interven gateway
+  deployed 2026-04-22 or later).
